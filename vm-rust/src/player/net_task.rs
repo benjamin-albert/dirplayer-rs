@@ -96,7 +96,12 @@ pub async fn fetch_net_task(
         .to_string();
 
     let request = match task.method {
-        HttpMethod::Get => web_sys::Request::new_with_str(&url_string.as_str()).unwrap(),
+        HttpMethod::Get => match web_sys::Request::new_with_str(&url_string.as_str()) {
+            Ok(r) => r,
+            Err(_) => {
+                return Err(4);
+            }
+        },
         HttpMethod::Post => {
             let mut opts = web_sys::RequestInit::new();
             opts.method("POST");
@@ -122,7 +127,9 @@ pub async fn fetch_net_task(
     let resp_result = JsFuture::from(window.fetch_with_request(&request)).await;
     let resp_value = match resp_result {
         Ok(v) => v,
-        Err(_) => return Err(4),
+        Err(_) => {
+            return Err(4);
+        }
     };
 
     assert!(resp_value.is_instance_of::<Response>());

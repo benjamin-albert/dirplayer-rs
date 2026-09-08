@@ -807,7 +807,8 @@ export async function createFlashInstance(
   document.body.appendChild(container);
 
   if (bridgeMode) {
-    if (!(await waitForBridge())) {
+    const ready = await waitForBridge();
+    if (!ready) {
       throw new Error('main-world Ruffle bridge did not become ready');
     }
     bridgeId = await bridgeCreatePlayer();

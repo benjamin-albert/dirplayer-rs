@@ -27,24 +27,42 @@ async function getRegistered(): Promise<Set<string>> {
   }
 }
 
+async function registerOne(script: chrome.scripting.RegisteredContentScript): Promise<void> {
+  try {
+    await chrome.scripting.registerContentScripts([script]);
+  } catch (e) {
+    console.warn('[DirPlayer] failed to register content script', script.id, e);
+  }
+}
+
+async function extensionFileExists(path: string): Promise<boolean> {
+  try {
+    const res = await fetch(chrome.runtime.getURL(path));
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function ensureRegistered(): Promise<void> {
   if (!chrome.scripting) {
     console.warn('[DirPlayer] chrome.scripting API not available');
     return;
   }
   const registered = await getRegistered();
-  const scripts: chrome.scripting.RegisteredContentScript[] = [];
+  const hasMainWorld = !!(
+    chrome.scripting.ExecutionWorld && chrome.scripting.ExecutionWorld.MAIN
+  );
 
-  // Pre-init (ISOLATED world) — runs FIRST, stamps the chrome-extension
-  // URL on `<html data-dirplayer-ruffle-url="...">` so the main-world
-  // Ruffle bundle (registered below) can pick it up as
-  // `__webpack_public_path__`. Registering it via the same scripting
-  // API call as Ruffle (and listing it first) gives us a much more
-  // reliable ordering than a separate manifest content_scripts entry,
-  // which the previous attempt used and saw racing the dynamic
-  // registration.
+  // Register each script in its own call. A missing Ruffle bundle used to
+  // fail the whole batch, so the MAIN-world Shockwave plugin polyfill never
+  // installed and pages that grep navigator.plugins showed "install Shockwave".
+
+  // Pre-init (ISOLATED world) — stamps the chrome-extension URL on
+  // `<html data-dirplayer-ruffle-url="...">` so the main-world Ruffle
+  // bundle can pick it up as `__webpack_public_path__`.
   if (!registered.has(PREINIT_SCRIPT_ID)) {
-    scripts.push({
+    await registerOne({
       id: PREINIT_SCRIPT_ID,
       js: ['dirplayer-pre-init.js'],
       matches: ['<all_urls>'],
@@ -58,12 +76,8 @@ async function ensureRegistered(): Promise<void> {
   // Plugin polyfill — injected into the page's MAIN world so detection
   // scripts find the fake `Shockwave for Director` entry. Going through
   // chrome.scripting bypasses the page's CSP `script-src` restrictions.
-  if (
-    !registered.has(POLYFILL_SCRIPT_ID) &&
-    chrome.scripting.ExecutionWorld &&
-    chrome.scripting.ExecutionWorld.MAIN
-  ) {
-    scripts.push({
+  if (!registered.has(POLYFILL_SCRIPT_ID) && hasMainWorld) {
+    await registerOne({
       id: POLYFILL_SCRIPT_ID,
       // The fetch bridge rides along in the same MAIN-world registration: it
       // lets the isolated-world player borrow the page's `fetch`, which archive
@@ -85,24 +99,25 @@ async function ensureRegistered(): Promise<void> {
   // Main world has a working CustomElementRegistry; the isolated-world
   // dirplayer talks to Ruffle there via a postMessage bridge planted
   // alongside Ruffle (extension/src/main-world-ruffle-bridge.js, copied
-  // through public/).
-  if (!registered.has(RUFFLE_SCRIPT_ID) && chrome.scripting.ExecutionWorld?.MAIN) {
-    scripts.push({
-      id: RUFFLE_SCRIPT_ID,
-      js: [RUFFLE_SCRIPT_FILE, 'dirplayer-ruffle-bridge-host.js'],
-      matches: ['<all_urls>'],
-      runAt: 'document_start',
-      allFrames: true,
-      world: 'MAIN',
-      persistAcrossSessions: true,
-    });
-  }
-
-  if (scripts.length > 0) {
-    try {
-      await chrome.scripting.registerContentScripts(scripts);
-    } catch (e) {
-      console.warn('[DirPlayer] failed to register content scripts:', e);
+  // through public/). Skip when the bundle was not copied into the
+  // extension (Shockwave-only local builds).
+  if (!registered.has(RUFFLE_SCRIPT_ID) && hasMainWorld) {
+    if (!(await extensionFileExists(RUFFLE_SCRIPT_FILE))) {
+      console.warn(
+        '[DirPlayer] skipping Ruffle content script; ' +
+          RUFFLE_SCRIPT_FILE +
+          ' is not in the extension package',
+      );
+    } else {
+      await registerOne({
+        id: RUFFLE_SCRIPT_ID,
+        js: [RUFFLE_SCRIPT_FILE, 'dirplayer-ruffle-bridge-host.js'],
+        matches: ['<all_urls>'],
+        runAt: 'document_start',
+        allFrames: true,
+        world: 'MAIN',
+        persistAcrossSessions: true,
+      });
     }
   }
 }

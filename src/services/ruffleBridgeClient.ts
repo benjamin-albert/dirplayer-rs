@@ -49,12 +49,22 @@ window.addEventListener(EVT_EVENT, (ev) => {
   }
 });
 
-function bridgeCall<T = unknown>(payload: Record<string, unknown>): Promise<T> {
+function bridgeCall<T = unknown>(payload: Record<string, unknown>, timeoutMs = 2000): Promise<T> {
   const requestId = nextRequest++;
   return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      pendingRequests.delete(requestId);
+      reject(new Error(`ruffle bridge timeout (${payload.method ?? 'call'})`));
+    }, timeoutMs);
     pendingRequests.set(requestId, {
-      resolve: (v) => resolve(v as T),
-      reject,
+      resolve: (v) => {
+        clearTimeout(timer);
+        resolve(v as T);
+      },
+      reject: (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
     });
     window.dispatchEvent(new CustomEvent(REQ_EVENT, {
       detail: { requestId, ...payload },
@@ -65,7 +75,7 @@ function bridgeCall<T = unknown>(payload: Record<string, unknown>): Promise<T> {
 /** True when the main-world bridge host is reachable AND has Ruffle ready. */
 export async function isBridgeReady(): Promise<boolean> {
   try {
-    return await bridgeCall<boolean>({ method: 'isReady' });
+    return await bridgeCall<boolean>({ method: 'isReady' }, 250);
   } catch {
     return false;
   }

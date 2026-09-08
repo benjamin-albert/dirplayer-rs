@@ -293,7 +293,8 @@ impl NetHandlers {
                     // (legacy Director-authored external_texts_*.txt etc.).
                     // Strips a UTF-8 BOM if present. See io::encoding for why
                     // strict-then-fallback is unambiguous in practice.
-                    Datum::String(crate::io::encoding::decode_text_auto(bytes))
+                    let decoded = crate::io::encoding::decode_text_auto(bytes);
+                    Datum::String(decoded)
                 }
                 _ => Datum::String("".to_owned()),
             };

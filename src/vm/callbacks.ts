@@ -76,7 +76,7 @@ export function initVmCallbacks() {
   };
 
   registerVmCallbacks({
-    onMovieLoaded: (result: OnMovieLoadedCallbackData) => {
+    onMovieLoaded: (_result: OnMovieLoadedCallbackData) => {
       // Offer trace log download if one was recorded
       try {
         const vm = require('vm-rust');
@@ -202,7 +202,9 @@ export function initVmCallbacks() {
       const swfDataCopy = new Uint8Array(swfData);
       console.log(`Flash member loaded: sprite#${spriteNum} ${castLib}:${castMember} ${width}x${height} (${swfDataCopy.length} bytes, first=[${Array.from(swfDataCopy.slice(0, 4)).join(',')}], pausedAtStart=${pausedAtStart}, assertedFrame=${assertedFrame})`);
       createFlashInstance(spriteNum, castLib, castMember, swfDataCopy, width, height, pausedAtStart, assertedFrame)
-        .catch(e => console.error('Failed to create Flash instance:', e));
+        .catch(e => {
+          console.error('Failed to create Flash instance:', e);
+        });
     },
     onFlashMemberUnloaded: (spriteNum: number) => {
       destroyFlashInstance(spriteNum);

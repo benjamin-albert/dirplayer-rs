@@ -27,6 +27,8 @@ pub struct Movie {
     pub alert_hook: Option<ScriptReceiver>,
     pub base_path: String,
     pub file_name: String,
+    /// `the movieFileSize` — length of the loaded movie file in bytes.
+    pub file_size: i32,
     pub stage_color: (u8, u8, u8),
     pub stage_color_ref: ColorRef,
     pub frame_rate: u16,
@@ -111,6 +113,7 @@ impl Movie {
             alert_hook: None,
             base_path: "".to_string(),
             file_name: "".to_string(),
+            file_size: 0,
             stage_color: (255, 255, 255),
             stage_color_ref: ColorRef::PaletteIndex(255),
             frame_rate: 30,
@@ -188,6 +191,7 @@ impl Movie {
             .await;
         self.score.load_from_dir(&file);
         self.file_name = file.file_name.to_string();
+        self.file_size = file.file_size.min(i32::MAX as u32) as i32;
         self.frame_rate = file.config.frame_rate;
         self.file = Some(file);
 
@@ -358,6 +362,13 @@ impl Movie {
             // checks pass instead of failing on a fabricated shortage.
             BuiltInSymbol::FreeBytes => Ok(Datum::Int(192 * 1024 * 1024)),
             BuiltInSymbol::FreeBlock => Ok(Datum::Int(128 * 1024 * 1024)),
+            // `the movieFileSize` — size of the current movie file in bytes
+            // (Director 11.5 Scripting Dictionary, memory properties).
+            // Afterburned Shockwave movies are already compact, so
+            // `the movieFileFreeSize` (slack that compacting would reclaim)
+            // is 0 — same as ScummVM's Director engine.
+            BuiltInSymbol::MovieFileSize => Ok(Datum::Int(self.file_size)),
+            BuiltInSymbol::MovieFileFreeSize => Ok(Datum::Int(0)),
             // `_system.colorDepth` — monitor color depth (Director 11.5
             // Scripting Dictionary, valid values 1/2/4/8/16/32). The web
             // canvas is true-color, so report 32. Setting it is a no-op

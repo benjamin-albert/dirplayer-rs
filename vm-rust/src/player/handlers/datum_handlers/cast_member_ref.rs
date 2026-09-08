@@ -25,6 +25,51 @@ use crate::{
 
 pub struct CastMemberRefHandlers {}
 
+/// Director 11.5 `member.size`: "size in memory, in bytes, of a cast member"
+/// (read-only). DGS probes this on Flash/text/script members (`size < 1000`
+/// means an empty/unlinked preloader). Never raise — return 0/1 if unknown.
+fn member_media_size_bytes(player: &DirPlayer, member_ref: &CastMemberRef) -> i32 {
+    let type_id = match player.movie.cast_manager.find_member_by_ref(member_ref) {
+        Some(m) => m.member_type.member_type_id(),
+        None => return 0,
+    };
+    if type_id == CastMemberTypeId::Script {
+        return player
+            .movie
+            .cast_manager
+            .get_script_by_ref(member_ref)
+            .map(|s| {
+                s.chunk
+                    .handlers
+                    .iter()
+                    .map(|h| h.bytecode_array.len())
+                    .sum::<usize>()
+                    .max(1) as i32
+            })
+            .unwrap_or(1);
+    }
+    let Some(member) = player.movie.cast_manager.find_member_by_ref(member_ref) else {
+        return 0;
+    };
+    match &member.member_type {
+        CastMemberType::Flash(f) => f.data.len() as i32,
+        CastMemberType::Text(t) => t
+            .text
+            .len()
+            .max(t.html_source.len())
+            .max(t.rtf_source.len())
+            .max(1) as i32,
+        CastMemberType::Field(f) => f.text.len().max(1) as i32,
+        CastMemberType::Bitmap(b) => player
+            .bitmap_manager
+            .get_bitmap(b.image_ref)
+            .map(|bm| bm.data.len().max(1) as i32)
+            .unwrap_or(1),
+        CastMemberType::Sound(s) => (s.sound.sample_count() as i32).max(1),
+        _ => 1,
+    }
+}
+
 fn is_3d_member(datum: &DatumRef) -> Result<bool, ScriptError> {
     reserve_player_mut(|player| {
         let r = match player.get_datum(datum) {
@@ -792,7 +837,7 @@ impl CastMemberRefHandlers {
             Some(BuiltInSymbol::MemberNum) => Ok(Datum::Int(-1)),
             Some(BuiltInSymbol::Text | BuiltInSymbol::Comments) => Ok(Datum::String("".to_string())),
             Some(BuiltInSymbol::Loaded | BuiltInSymbol::MediaReady) => Ok(Datum::Int(1)),
-            Some(BuiltInSymbol::Width | BuiltInSymbol::Height | BuiltInSymbol::Rect | BuiltInSymbol::Duration) => Ok(Datum::Void),
+            Some(BuiltInSymbol::Width | BuiltInSymbol::Height | BuiltInSymbol::Rect | BuiltInSymbol::Duration | BuiltInSymbol::Size) => Ok(Datum::Void),
             Some(BuiltInSymbol::Image) => Ok(Datum::Void),
             Some(BuiltInSymbol::RegPoint) => Ok(Datum::Point([0.0, 0.0], 0)),
             _ => Err(ScriptError::new(format!(
@@ -1637,6 +1682,9 @@ impl CastMemberRefHandlers {
             Some(BuiltInSymbol::Comments) => Ok(Datum::String(comments)),
             Some(BuiltInSymbol::Ilk) => Ok(Datum::Symbol(Symbol::from_str("member"))),
             Some(BuiltInSymbol::Member) => Ok(Datum::CastMember(cast_member_ref.clone())),
+            Some(BuiltInSymbol::Size) => {
+                Ok(Datum::Int(member_media_size_bytes(player, cast_member_ref)))
+            }
             _ => Self::get_member_type_prop(player, cast_member_ref, &member_type, prop),
         }
     }

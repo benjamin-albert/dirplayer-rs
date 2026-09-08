@@ -16,6 +16,8 @@ impl ScriptDatumHandlers {
             "birth" => true,
             "rawnew" => false,
             "handler" => false,
+            "handlers" => false,
+            "count" => false,
             _ => {
                 reserve_player_ref(|player| {
                     if let Datum::ScriptRef(script_ref) = player.get_datum(obj_ref) {
@@ -104,6 +106,7 @@ impl ScriptDatumHandlers {
             "rawnew" => Self::raw_new(datum),
             "handler" => Self::handler(datum, args),
             "handlers" => Self::handlers(datum, args),
+            "count" => Self::count(datum, args),
             // A movie script's static properties are addressable through the
             // script reference (Neopets DGS uses `script("globals")` as a global
             // data store: `g.levellist = []`, `g.levellist.add(...)`, etc.).
@@ -154,6 +157,46 @@ impl ScriptDatumHandlers {
                 "no handler {handler_name} for script datum"
             ))),
         }
+    }
+
+    /// `script.count(#prop)` — number of items in a static property that is a
+    /// list, matching `ScriptInstanceHandlers::count`. DGS stores globals on
+    /// `script("globals")` and uses `.count(#levellist)` etc.
+    /// No-arg `script.count()` is the number of static properties (Director
+    /// `count(object)` for a non-list object is 1 if there are none).
+    pub fn count(datum: &DatumRef, args: &Vec<DatumRef>) -> Result<DatumRef, ScriptError> {
+        reserve_player_mut(|player| {
+            let script_ref = match player.get_datum(datum) {
+                Datum::ScriptRef(s) => s.clone(),
+                _ => return Err(ScriptError::new("Expected script reference".to_string())),
+            };
+            if args.is_empty() {
+                let n = player
+                    .movie
+                    .cast_manager
+                    .get_script_by_ref(&script_ref)
+                    .map(|s| s.properties.borrow().len() as i32)
+                    .unwrap_or(1)
+                    .max(1);
+                return Ok(player.alloc_datum(Datum::Int(n)));
+            }
+            let prop_name = Symbol::from_str(&player.get_datum(&args[0]).string_value()?);
+            let prop_value = crate::player::script::script_get_static_prop(player, &script_ref, prop_name)?;
+            let prop_value_datum = player.get_datum(&prop_value);
+            let count = match prop_value_datum {
+                Datum::List(_, list, _) => list.len(),
+                Datum::PropList(prop_list, ..) => prop_list.len(),
+                Datum::Void => 0,
+                other => {
+                    return Err(ScriptError::new(format!(
+                        "Cannot count non-list property {} (type {})",
+                        prop_name.as_str(),
+                        other.type_str()
+                    )))
+                }
+            };
+            Ok(player.alloc_datum(Datum::Int(count as i32)))
+        })
     }
 
     pub fn handlers(datum: &DatumRef, args: &Vec<DatumRef>) -> Result<DatumRef, ScriptError> {

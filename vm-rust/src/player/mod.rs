@@ -3227,7 +3227,10 @@ impl DirPlayer {
             // `the moviePath`, and `setTheMoviePath` fakes both.
             BuiltInSymbol::Path => {
                 match self.env_overrides.movie_path.clone().filter(|s| !s.is_empty()) {
-                    Some(path) => Ok(self.alloc_datum(Datum::String(dir_part_of_path(&path)))),
+                    Some(path) => {
+                        let value = dir_part_of_path(&path);
+                        Ok(self.alloc_datum(Datum::String(value)))
+                    }
                     None => {
                         let datum = self.movie.get_prop(prop)?;
                         Ok(self.alloc_datum(datum))
