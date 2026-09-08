@@ -401,6 +401,18 @@ impl SoundChannelDatumHandlers {
 
         let channel_rc = Self::get_sound_channel_mut(player, datum)?;
 
+        // Director: `sound().play(member)` honors the member's loop checkbox
+        // (same as puppetSound / score). 0 = loop forever, 1 = play once.
+        // HatIC calls this for HATIC_PART_1 / HATIC_PART_2, which have loop
+        // enabled; hardcoding 1 made the track stop at the end.
+        let loop_count = {
+            let arg = player.get_datum(member_ref);
+            match SoundChannel::resolve_sound_member(player, arg) {
+                Some(sound) if sound.info.loop_enabled => 0,
+                _ => 1,
+            }
+        };
+
         // Clear any playlist and play this member directly
         {
             let mut ch = channel_rc.borrow_mut();
@@ -408,9 +420,9 @@ impl SoundChannelDatumHandlers {
             ch.playlist.clear();
             ch.current_segment_index = None;
             ch.stop_playback_nodes();
-            
-            ch.loop_count = 1;
-            ch.loops_remaining = 1;
+
+            ch.loop_count = loop_count;
+            ch.loops_remaining = loop_count;
         }
 
         // Use play_file to start playback
@@ -2087,7 +2099,7 @@ impl SoundChannel {
                     }
                 };
                 source.set_buffer(Some(&resampled_buffer));
-                source.set_loop(loop_count == 0); 
+                source.set_loop(loop_count == 0);
 
                 // Create gain node
                 let gain = match ch.audio_context().create_gain() {
