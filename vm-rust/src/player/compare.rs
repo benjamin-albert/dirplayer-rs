@@ -393,6 +393,18 @@ pub fn datum_equals_member(
     if let Some(matched) = symbol_string_match {
         return Ok(matched);
     }
+    // String vs string (or chunk): case-SENSITIVE. Director `=` is
+    // case-insensitive, but getPos on a list of distinct glyphs must not
+    // collapse "a" and "A". HatIC `script("secure")` builds a 96-char
+    // charset containing both cases; case-insensitive getPos made
+    // decrypt_pc927634892(encrypt_pc927634892(x)) ≠ x, so the cave map
+    // never saw tab-separated level names.
+    match (left, right) {
+        (String(_) | StringChunk(..), String(_) | StringChunk(..)) => {
+            return Ok(left.string_value()? == right.string_value()?);
+        }
+        _ => {}
+    }
     datum_equals(left, right, allocator)
 }
 

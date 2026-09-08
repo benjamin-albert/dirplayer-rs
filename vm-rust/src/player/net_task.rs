@@ -9,8 +9,6 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::Response;
 
-use percent_encoding::percent_decode_str;
-
 use crate::player::net_manager::NetManagerSharedState;
 
 pub type NetResult = Result<Vec<u8>, i32>;
@@ -89,11 +87,24 @@ pub async fn fetch_net_task(
     // Note: file:// URLs are handled in preload_net_thing and never reach this function
     let window = web_sys::window().unwrap();
 
-    let mut url_string = task.resolved_url.to_string();
-    url_string = percent_decode_str(&url_string)
-        .decode_utf8()
-        .unwrap()
-        .to_string();
+    // Shockwave movies hardcode http:// even when the embed is HTTPS (Neopets
+    // DGS: dgs_get_game_data.phtml). Isolated-world fetch of that HTTP URL
+    // does not send Secure cookies, so DGS returns username=guest_user_account
+    // despite a logged-in page. Flash fetches already upgrade the scheme
+    // (flashPlayerManager.upgradeInsecureUrl); do the same here.
+    let mut resolved = task.resolved_url.clone();
+    if let Ok(proto) = window.location().protocol() {
+        if proto == "https:" && resolved.scheme() == "http" {
+            let host = resolved.host_str().unwrap_or("");
+            if host != "localhost" && host != "127.0.0.1" {
+                let _ = resolved.set_scheme("https");
+            }
+        }
+    }
+    // Keep the `url` crate's serialization (query spaces as %20). Decoding
+    // the whole URL turned `world=Terror Mountain` into a raw space and DGS
+    // then returned a random `p=` preloader (ml_meridell / ml_faerieland / …).
+    let url_string = resolved.to_string();
 
     let request = match task.method {
         HttpMethod::Get => match web_sys::Request::new_with_str(&url_string.as_str()) {
