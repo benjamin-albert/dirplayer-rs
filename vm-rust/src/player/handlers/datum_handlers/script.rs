@@ -108,8 +108,7 @@ impl ScriptDatumHandlers {
             "handlers" => Self::handlers(datum, args),
             "count" => Self::count(datum, args),
             // A movie script's static properties are addressable through the
-            // script reference (Neopets DGS uses `script("globals")` as a global
-            // data store: `g.levellist = []`, `g.levellist.add(...)`, etc.).
+            // script reference (`g.levellist = []`, `g.levellist.add(...)`).
             // getPropRef returns the property's shared DatumRef so in-place list
             // mutation persists, mirroring the ScriptInstance handler.
             "getprop" | "getpropref" | "getaprop" => reserve_player_mut(|player| {
@@ -160,8 +159,7 @@ impl ScriptDatumHandlers {
     }
 
     /// `script.count(#prop)` — number of items in a static property that is a
-    /// list, matching `ScriptInstanceHandlers::count`. DGS stores globals on
-    /// `script("globals")` and uses `.count(#levellist)` etc.
+    /// list, matching `ScriptInstanceHandlers::count`.
     /// No-arg `script.count()` is the number of static properties (Director
     /// `count(object)` for a non-list object is 1 if there are none).
     pub fn count(datum: &DatumRef, args: &Vec<DatumRef>) -> Result<DatumRef, ScriptError> {
@@ -386,5 +384,179 @@ impl ScriptDatumHandlers {
         } else {
             return Ok(datum_ref);
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod script_count_tests {
+    use super::*;
+    use crate::{
+        director::{chunks::script::ScriptChunk, enums::ScriptType, lingo::datum::DatumType},
+        player::{
+            cast_lib::{cast_member_ref, CastLib, CastLibState},
+            script::Script,
+            symbols::symbol_table::init_symbol_table,
+            testing::{run_test, TestPlayer},
+        },
+    };
+    use fxhash::FxHashMap;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    fn empty_cast(number: u32) -> CastLib {
+        CastLib {
+            name: String::new(),
+            file_name: String::new(),
+            number,
+            is_external: false,
+            state: CastLibState::Loaded,
+            lctx: None,
+            members: FxHashMap::default(),
+            scripts: FxHashMap::default(),
+            name_symbols: Vec::new(),
+            preload_mode: 0,
+            capital_x: false,
+            dir_version: 0,
+            palette_id_offset: 0,
+            name_index: RefCell::new(None),
+            font_table: HashMap::new(),
+        }
+    }
+
+    fn empty_script_chunk() -> ScriptChunk {
+        ScriptChunk {
+            script_number: 1,
+            literals: vec![],
+            handlers: vec![],
+            property_name_ids: vec![],
+            property_defaults: HashMap::new(),
+        }
+    }
+
+    fn install_script(player: &mut crate::player::DirPlayer, name: &str) -> (CastMemberRef, DatumRef) {
+        let member_ref = cast_member_ref(1, 1);
+        let script = Script {
+            member_ref: member_ref.clone(),
+            name: name.to_string(),
+            chunk: empty_script_chunk(),
+            script_type: ScriptType::Movie,
+            handlers: FxHashMap::default(),
+            handler_names_raw: vec![],
+            handler_names: vec![],
+            properties: RefCell::new(FxHashMap::default()),
+        };
+        let mut cast = empty_cast(1);
+        cast.scripts.insert(1, Rc::new(script));
+        player.movie.cast_manager.casts.push(cast);
+        let datum = player.alloc_datum(Datum::ScriptRef(member_ref.clone()));
+        (member_ref, datum)
+    }
+
+    #[test]
+    fn no_arg_count_is_at_least_one() {
+        init_symbol_table();
+        run_test(async {
+            let _p = TestPlayer::new();
+            reserve_player_mut(|player| {
+                let (_r, datum) = install_script(player, "globals");
+                let n = ScriptDatumHandlers::count(&datum, &vec![]).unwrap();
+                match player.get_datum(&n) {
+                    Datum::Int(1) => {}
+                    other => panic!("expected Int(1), got {}", other.type_str()),
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn no_arg_count_is_the_number_of_static_properties() {
+        init_symbol_table();
+        run_test(async {
+            let _p = TestPlayer::new();
+            reserve_player_mut(|player| {
+                let (member_ref, datum) = install_script(player, "globals");
+                let a = player.alloc_datum(Datum::Int(1));
+                let b = player.alloc_datum(Datum::Int(2));
+                crate::player::script::script_set_static_prop(
+                    player,
+                    &member_ref,
+                    Symbol::from_str("one"),
+                    &a,
+                    false,
+                )
+                .unwrap();
+                crate::player::script::script_set_static_prop(
+                    player,
+                    &member_ref,
+                    Symbol::from_str("two"),
+                    &b,
+                    false,
+                )
+                .unwrap();
+                let n = ScriptDatumHandlers::count(&datum, &vec![]).unwrap();
+                match player.get_datum(&n) {
+                    Datum::Int(2) => {}
+                    other => panic!("expected Int(2), got {}", other.type_str()),
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn count_of_a_list_property_is_the_list_length() {
+        init_symbol_table();
+        run_test(async {
+            let _p = TestPlayer::new();
+            reserve_player_mut(|player| {
+                let (member_ref, datum) = install_script(player, "globals");
+                let items = VecDeque::from([
+                    player.alloc_datum(Datum::Int(1)),
+                    player.alloc_datum(Datum::Int(2)),
+                    player.alloc_datum(Datum::Int(3)),
+                ]);
+                let list = player.alloc_datum(Datum::List(DatumType::List, items, false));
+                crate::player::script::script_set_static_prop(
+                    player,
+                    &member_ref,
+                    Symbol::from_str("levellist"),
+                    &list,
+                    false,
+                )
+                .unwrap();
+                let prop = player.alloc_datum(Datum::Symbol(Symbol::from_str("levellist")));
+                let n = ScriptDatumHandlers::count(&datum, &vec![prop]).unwrap();
+                match player.get_datum(&n) {
+                    Datum::Int(3) => {}
+                    other => panic!("expected Int(3), got {}", other.type_str()),
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn count_of_a_void_property_is_zero() {
+        init_symbol_table();
+        run_test(async {
+            let _p = TestPlayer::new();
+            reserve_player_mut(|player| {
+                let (member_ref, datum) = install_script(player, "globals");
+                crate::player::script::script_set_static_prop(
+                    player,
+                    &member_ref,
+                    Symbol::from_str("empty"),
+                    &DatumRef::Void,
+                    false,
+                )
+                .unwrap();
+                let prop = player.alloc_datum(Datum::Symbol(Symbol::from_str("empty")));
+                let n = ScriptDatumHandlers::count(&datum, &vec![prop]).unwrap();
+                match player.get_datum(&n) {
+                    Datum::Int(0) => {}
+                    other => panic!("expected Int(0), got {}", other.type_str()),
+                }
+            });
+        });
     }
 }

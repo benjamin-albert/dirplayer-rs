@@ -682,3 +682,34 @@ impl Movie {
         Some(value)
     }
 }
+
+#[cfg(test)]
+mod movie_file_size_tests {
+    use super::*;
+    use crate::player::symbols::symbol_table::init_symbol_table;
+
+    #[test]
+    fn movie_file_size_is_the_loaded_byte_length() {
+        init_symbol_table();
+        let mut movie = Movie::empty();
+        movie.file_size = 48_291;
+        assert!(matches!(
+            movie.get_prop(Symbol::from_str("movieFileSize")).unwrap(),
+            Datum::Int(48_291)
+        ));
+    }
+
+    #[test]
+    fn movie_file_free_size_is_zero() {
+        // Afterburned Shockwave movies have no compactable slack; ScummVM's
+        // Director engine reports 0 as well.
+        init_symbol_table();
+        let movie = Movie::empty();
+        assert!(matches!(
+            movie
+                .get_prop(Symbol::from_str("movieFileFreeSize"))
+                .unwrap(),
+            Datum::Int(0)
+        ));
+    }
+}
