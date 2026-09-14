@@ -228,9 +228,14 @@ pub async fn fetch_net_task(
 /// `showLoadingStatus` each frame, which refills the `pre_main` field *after*
 /// the translation's `onLoad` blanks it. That handler no-ops when
 /// `bytesSoFar == 0` or percent == 100, then `gameLoaded()` (`netDone`) jumps
-/// straight to state 35/350 which only polls Flash `playGame`. A cache-hit
-/// `.dcr` finishes in one chunk, so those paint frames never happen and the
-/// guest gate waits forever on a Play button that still says "Loading Game".
+/// straight to state 35/350 which only polls Flash `playGame`.
+///
+/// When the whole `.dcr` arrives in one chunk (browser cache, or a fetch that
+/// never streamed), those paint frames never happen and the guest gate waits
+/// forever on a Play button that still says "Loading Game". Typical internet
+/// connections of the era took many frames to download a game `.dcr`, so a
+/// mid-file `getStreamStatus` was the usual case. Finishing before any poll
+/// is a modern cache/fetch artifact, not a Director feature.
 ///
 /// Keep `netDone` false until Lingo has seen one true mid-file
 /// `getStreamStatus` (or ~50ms, so Matematik-style `netDone` waits are not
@@ -283,8 +288,9 @@ async fn maybe_hold_dcr_for_preloader(
     };
     if !saw_mid {
         // DGS `showGameLoadStats` returns immediately at 0% and 100%. If the
-        // download never opened a mid-file window (one-chunk / cache), report
-        // one now so the next getStreamStatus actually calls showLoadingStatus.
+        // download never opened a mid-file window (one-chunk / cache — a modern
+        // artifact), report one now so the next getStreamStatus actually calls
+        // showLoadingStatus.
         {
             let mut state = shared_state.lock().await;
             let (loaded, reported_total) = state
