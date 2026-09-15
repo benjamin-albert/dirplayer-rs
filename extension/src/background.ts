@@ -10,8 +10,28 @@
 // to the extension root by Vite). Modeled after Ruffle's
 // `web/packages/extension/src/background.ts` strategy.
 
-import { base64ToBytes, bytesToBase64 } from '../../src/services/base64Binary';
-import { corsProxyContentLength } from '../../src/services/corsProxyPolicy';
+// Copied locally on purpose. Importing `src/services/base64Binary` /
+// `corsProxyPolicy` from both this service worker and the isolated content
+// script makes Vite emit a shared chunk; Chrome content scripts cannot
+// load that chunk, so the player never mounts and the page shows
+// "This plugin is not supported".
+const B64_CHUNK = 0x8000;
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += B64_CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + B64_CHUNK) as unknown as number[]);
+  }
+  return btoa(bin);
+}
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function corsProxyContentLength(header: string | null | undefined, bodyByteLength: number): string {
+  return header ? header : String(bodyByteLength);
+}
 
 const POLYFILL_SCRIPT_ID = 'dirplayer-shockwave-plugin-polyfill';
 const POLYFILL_SCRIPT_FILE = 'dirplayer-shockwave-polyfill.js';
