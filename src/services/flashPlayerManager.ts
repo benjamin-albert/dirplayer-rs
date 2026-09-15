@@ -152,8 +152,23 @@ function upgradeInsecureUrl(url: URL): boolean {
 // responses, so we relay cross-origin requests through it. Standalone/electron
 // (no chrome.runtime) and same-origin / localhost-proxy requests stay direct.
 // `chrome` isn't in the app's TS lib; access it structurally.
+interface ChromeRuntimePort {
+  postMessage: (msg: unknown) => void;
+  disconnect: () => void;
+  onMessage: { addListener: (cb: (msg: unknown) => void) => void };
+  onDisconnect: { addListener: (cb: () => void) => void };
+}
+
+const CORS_FETCH_PORT = 'dirplayer-cors-fetch';
+
 const extChrome = (globalThis as unknown as {
-  chrome?: { runtime?: { id?: string; sendMessage?: (msg: unknown) => Promise<unknown> } };
+  chrome?: {
+    runtime?: {
+      id?: string;
+      sendMessage?: (msg: unknown) => Promise<unknown>;
+      connect?: (info?: { name?: string }) => ChromeRuntimePort;
+    };
+  };
 }).chrome;
 
 function isExtensionContext(): boolean {
@@ -209,8 +224,42 @@ interface BgFetchResult {
   status?: number;
   statusText?: string;
   contentType?: string;
+  contentLength?: string;
   bodyBase64?: string;
   error?: string;
+}
+
+interface CorsFetchMeta {
+  kind: 'meta';
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  contentType?: string;
+  contentLength?: string;
+  error?: string;
+}
+
+interface CorsFetchChunk {
+  kind: 'chunk';
+  dataBase64?: string;
+}
+
+interface CorsFetchDone {
+  kind: 'done';
+}
+
+interface CorsFetchError {
+  kind: 'error';
+  error?: string;
+}
+
+type CorsFetchPortMsg = CorsFetchMeta | CorsFetchChunk | CorsFetchDone | CorsFetchError;
+
+function corsResponseHeaders(contentType?: string, contentLength?: string): HeadersInit | undefined {
+  const headers: Record<string, string> = {};
+  if (contentType) headers['content-type'] = contentType;
+  if (contentLength) headers['content-length'] = contentLength;
+  return Object.keys(headers).length ? headers : undefined;
 }
 
 async function corsFetchRawViaBackground(
@@ -229,7 +278,7 @@ async function corsFetchRawViaBackground(
   return resp || { error: 'no response from background' };
 }
 
-async function corsFetchViaBackground(
+async function corsFetchBufferedViaMessage(
   url: string,
   method: string,
   headers?: Record<string, string>,
@@ -239,11 +288,135 @@ async function corsFetchViaBackground(
   if (resp.error) throw new Error('cors-fetch: ' + resp.error);
   const bytes = base64ToBytes(resp.bodyBase64 || '');
   const status = resp.status && resp.status >= 200 ? resp.status : 200;
+  const contentLength = resp.contentLength || String(bytes.byteLength);
   return new Response(bytes as unknown as BodyInit, {
     status,
     statusText: resp.statusText || '',
-    headers: resp.contentType ? { 'content-type': resp.contentType } : undefined,
+    headers: corsResponseHeaders(resp.contentType, contentLength),
   });
+}
+
+function corsFetchStreamViaPort(
+  url: string,
+  method: string,
+  headers?: Record<string, string>,
+  bodyBytes?: Uint8Array,
+): Promise<Response> {
+  const connect = extChrome?.runtime?.connect;
+  if (typeof connect !== 'function') {
+    return Promise.reject(new Error('cors-fetch: runtime.connect unavailable'));
+  }
+
+  return new Promise<Response>((resolve, reject) => {
+    let port: ChromeRuntimePort;
+    try {
+      port = connect({ name: CORS_FETCH_PORT });
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error(String(e)));
+      return;
+    }
+
+    let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let settled = false;
+    let streamClosed = false;
+
+    const fail = (err: Error) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      } else if (!streamClosed) {
+        streamClosed = true;
+        try { controller?.error(err); } catch { /* already closed */ }
+      }
+      try { port.disconnect(); } catch { /* already gone */ }
+    };
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+      },
+      cancel() {
+        streamClosed = true;
+        try { port.disconnect(); } catch { /* already gone */ }
+      },
+    });
+
+    port.onMessage.addListener((raw) => {
+      const msg = raw as CorsFetchPortMsg;
+      if (!msg || !msg.kind) return;
+      if (msg.kind === 'meta') {
+        if (msg.error && !msg.status) {
+          fail(new Error('cors-fetch: ' + msg.error));
+          return;
+        }
+        const status = msg.status && msg.status >= 200 ? msg.status : 200;
+        settled = true;
+        resolve(new Response(stream, {
+          status,
+          statusText: msg.statusText || '',
+          headers: corsResponseHeaders(msg.contentType, msg.contentLength),
+        }));
+        return;
+      }
+      if (msg.kind === 'chunk') {
+        const b64 = msg.dataBase64 || '';
+        const u8 = b64 ? base64ToBytes(b64) : new Uint8Array(0);
+        if (u8.byteLength > 0 && controller && !streamClosed) {
+          controller.enqueue(u8);
+        }
+        return;
+      }
+      if (msg.kind === 'done') {
+        if (!streamClosed) {
+          streamClosed = true;
+          try { controller?.close(); } catch { /* already closed */ }
+        }
+        try { port.disconnect(); } catch { /* already gone */ }
+        return;
+      }
+      if (msg.kind === 'error') {
+        fail(new Error('cors-fetch: ' + (msg.error || 'port error')));
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (!settled) {
+        fail(new Error('cors-fetch: port disconnected'));
+        return;
+      }
+      if (!streamClosed) {
+        streamClosed = true;
+        try { controller?.close(); } catch { /* already closed */ }
+      }
+    });
+
+    try {
+      port.postMessage({
+        url,
+        method,
+        headers,
+        bodyBase64: bodyBytes && bodyBytes.byteLength ? bytesToBase64(bodyBytes) : undefined,
+      });
+    } catch (e) {
+      fail(e instanceof Error ? e : new Error(String(e)));
+    }
+  });
+}
+
+async function corsFetchViaBackground(
+  url: string,
+  method: string,
+  headers?: Record<string, string>,
+  bodyBytes?: Uint8Array,
+): Promise<Response> {
+  if (typeof extChrome?.runtime?.connect === 'function') {
+    try {
+      return await corsFetchStreamViaPort(url, method, headers, bodyBytes);
+    } catch {
+      // SW not ready / port failed before headers — buffered sendMessage.
+    }
+  }
+  return corsFetchBufferedViaMessage(url, method, headers, bodyBytes);
 }
 
 const origFetch = window.fetch;
@@ -296,7 +469,8 @@ window.fetch = function(input: RequestInfo | URL, init?: RequestInit): Promise<R
         ? url.toString()
         : (maybeCorsProxy(url.toString()) || (upgraded ? url.toString() : null));
       const finalUrl = rewritten || url.toString();
-      const crossOrigin = shouldProxyCrossOrigin(new URL(finalUrl, window.location.origin));
+      const finalParsed = new URL(finalUrl, window.location.origin);
+      const crossOrigin = shouldProxyCrossOrigin(finalParsed);
       if (rewritten || crossOrigin) {
         const req = input;
         return trackFetch(req.arrayBuffer().then(bodyBuf => {

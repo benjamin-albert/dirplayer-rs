@@ -112,14 +112,46 @@ async function ensureRegistered(): Promise<void> {
 // `host_permissions` does NOT let it read cross-origin responses — but the
 // service worker (with host_permissions <all_urls>) can. Neopets' DGS loads its
 // game SWF (ml_maraqua.swf) and other assets from cross-origin neopets hosts;
-// flashPlayerManager's fetch shim routes those here. Bytes are base64-framed
-// because chrome.runtime messaging JSON-serializes payloads.
+// flashPlayerManager's fetch shim routes those here.
+//
+// Prefer `chrome.runtime.connect` so the body is forwarded as base64
+// chunks (the VM updates getStreamStatus per ReadableStream chunk).
+// `Port.postMessage` JSON-serializes, so ArrayBuffers arrive empty; the
+// one-shot `sendMessage` fallback also base64-frames the full body.
+const CORS_FETCH_PORT = 'dirplayer-cors-fetch';
+
 interface CorsFetchRequest {
   type: 'dirplayer-cors-fetch';
   url: string;
   method?: string;
   headers?: Record<string, string>;
   body?: string; // base64
+}
+
+function corsFetchInit(
+  url: string,
+  method: string | undefined,
+  headers: Record<string, string> | undefined,
+  body: BodyInit | undefined,
+): Promise<Response> {
+  return fetch(url, {
+    method: method || 'GET',
+    headers,
+    body,
+    credentials: 'omit',
+  });
+}
+
+function arrayBufferToBase64(buf: Uint8Array): string {
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < buf.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(
+      null,
+      buf.subarray(i, i + CHUNK) as unknown as number[],
+    );
+  }
+  return btoa(bin);
 }
 
 chrome.runtime.onMessage.addListener((msg: CorsFetchRequest, _sender, sendResponse) => {
@@ -130,33 +162,118 @@ chrome.runtime.onMessage.addListener((msg: CorsFetchRequest, _sender, sendRespon
       const body = msg.body
         ? Uint8Array.from(atob(msg.body), (c) => c.charCodeAt(0))
         : undefined;
-      const res = await fetch(msg.url, {
-        method: msg.method || 'GET',
-        headers: msg.headers,
-        body,
-        credentials: 'omit',
-      });
+      const res = await corsFetchInit(msg.url, msg.method, msg.headers, body);
       const buf = new Uint8Array(await res.arrayBuffer());
-      let bin = '';
-      const CHUNK = 0x8000;
-      for (let i = 0; i < buf.length; i += CHUNK) {
-        bin += String.fromCharCode.apply(
-          null,
-          buf.subarray(i, i + CHUNK) as unknown as number[],
-        );
-      }
+      const contentLength =
+        res.headers.get('content-length') || String(buf.byteLength);
       sendResponse({
         ok: res.ok,
         status: res.status,
         statusText: res.statusText,
         contentType: res.headers.get('content-type') || '',
-        bodyBase64: btoa(bin),
+        contentLength,
+        bodyBase64: arrayBufferToBase64(buf),
       });
     } catch (e) {
       sendResponse({ ok: false, status: 0, error: String((e as Error)?.message || e) });
     }
   })();
   return true; // keep the message channel open for the async sendResponse
+});
+
+interface CorsFetchPortRequest {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  bodyBase64?: string;
+}
+
+async function streamCorsFetchOnPort(
+  port: chrome.runtime.Port,
+  msg: CorsFetchPortRequest,
+): Promise<void> {
+  const res = await corsFetchInit(
+    msg.url,
+    msg.method,
+    msg.headers,
+    msg.bodyBase64
+      ? Uint8Array.from(atob(msg.bodyBase64), (c) => c.charCodeAt(0))
+      : undefined,
+  );
+  port.postMessage({
+    kind: 'meta',
+    ok: res.ok,
+    status: res.status,
+    statusText: res.statusText,
+    contentType: res.headers.get('content-type') || '',
+    contentLength: res.headers.get('content-length') || '',
+  });
+
+  let disconnected = false;
+  const onDisconnect = () => {
+    disconnected = true;
+  };
+  port.onDisconnect.addListener(onDisconnect);
+
+  try {
+    if (!res.body) {
+      const buf = await res.arrayBuffer();
+      if (!disconnected && buf.byteLength > 0) {
+        port.postMessage({
+          kind: 'chunk',
+          dataBase64: arrayBufferToBase64(new Uint8Array(buf)),
+        });
+      }
+    } else {
+      const reader = res.body.getReader();
+      try {
+        while (!disconnected) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (disconnected) break;
+          if (value && value.byteLength > 0) {
+            port.postMessage({
+              kind: 'chunk',
+              dataBase64: arrayBufferToBase64(value),
+            });
+          }
+        }
+      } finally {
+        try {
+          await reader.cancel();
+        } catch {
+          /* already closed */
+        }
+      }
+    }
+    if (!disconnected) {
+      port.postMessage({ kind: 'done' });
+    }
+  } catch (e) {
+    if (!disconnected) {
+      port.postMessage({
+        kind: 'error',
+        error: String((e as Error)?.message || e),
+      });
+    }
+  }
+}
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== CORS_FETCH_PORT) return;
+  port.onMessage.addListener((msg: CorsFetchPortRequest) => {
+    if (!msg || !msg.url) return;
+    void streamCorsFetchOnPort(port, msg).catch((e) => {
+      try {
+        port.postMessage({
+          kind: 'error',
+          error: String((e as Error)?.message || e),
+        });
+      } catch {
+        /* port already gone */
+      }
+    });
+  });
 });
 
 // CORS relaxation for Ruffle's MAIN-world SWF loads. Ruffle runs in the page's
