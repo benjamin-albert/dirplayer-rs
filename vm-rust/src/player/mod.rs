@@ -37,6 +37,7 @@ pub mod keyboard_map;
 pub mod mcp;
 pub mod movie;
 pub mod net_manager;
+pub mod net_progress;
 pub mod net_task;
 pub mod profiling;
 pub mod scope;

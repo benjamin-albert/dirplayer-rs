@@ -181,8 +181,14 @@ impl NetHandlers {
                         // `percentloaded = bytesloaded / bytestotal * 100`.
                         // Accurate mid-load % still needs Content-Length (which
                         // the proxy now preserves); this is the graceful floor.
-                        let total = task_state.bytes_total.max(task_state.bytes_loaded);
-                        if task_state.bytes_total > task_state.bytes_loaded {
+                        let total = crate::player::net_progress::in_progress_bytes_total(
+                            task_state.bytes_loaded,
+                            task_state.bytes_total,
+                        );
+                        if crate::player::net_progress::is_true_mid_file_progress(
+                            task_state.bytes_loaded,
+                            task_state.bytes_total,
+                        ) {
                             if let Some(mut shared) = player.net_manager.shared_state.try_lock() {
                                 if let Some(s) = shared.task_states.get_mut(&task_id) {
                                     s.lingo_saw_mid_progress = true;

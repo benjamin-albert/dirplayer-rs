@@ -10,6 +10,9 @@
 // to the extension root by Vite). Modeled after Ruffle's
 // `web/packages/extension/src/background.ts` strategy.
 
+import { base64ToBytes, bytesToBase64 } from '../../src/services/base64Binary';
+import { corsProxyContentLength } from '../../src/services/corsProxyPolicy';
+
 const POLYFILL_SCRIPT_ID = 'dirplayer-shockwave-plugin-polyfill';
 const POLYFILL_SCRIPT_FILE = 'dirplayer-shockwave-polyfill.js';
 const PREINIT_SCRIPT_ID = 'dirplayer-pre-init';
@@ -142,37 +145,24 @@ function corsFetchInit(
   });
 }
 
-function arrayBufferToBase64(buf: Uint8Array): string {
-  let bin = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < buf.length; i += CHUNK) {
-    bin += String.fromCharCode.apply(
-      null,
-      buf.subarray(i, i + CHUNK) as unknown as number[],
-    );
-  }
-  return btoa(bin);
-}
-
 chrome.runtime.onMessage.addListener((msg: CorsFetchRequest, _sender, sendResponse) => {
   if (!msg || msg.type !== 'dirplayer-cors-fetch') return; // not ours — let others handle
   void _sender;
   (async () => {
     try {
-      const body = msg.body
-        ? Uint8Array.from(atob(msg.body), (c) => c.charCodeAt(0))
-        : undefined;
+      const body = msg.body ? base64ToBytes(msg.body) : undefined;
       const res = await corsFetchInit(msg.url, msg.method, msg.headers, body);
       const buf = new Uint8Array(await res.arrayBuffer());
-      const contentLength =
-        res.headers.get('content-length') || String(buf.byteLength);
       sendResponse({
         ok: res.ok,
         status: res.status,
         statusText: res.statusText,
         contentType: res.headers.get('content-type') || '',
-        contentLength,
-        bodyBase64: arrayBufferToBase64(buf),
+        contentLength: corsProxyContentLength(
+          res.headers.get('content-length'),
+          buf.byteLength,
+        ),
+        bodyBase64: bytesToBase64(buf),
       });
     } catch (e) {
       sendResponse({ ok: false, status: 0, error: String((e as Error)?.message || e) });
@@ -196,9 +186,7 @@ async function streamCorsFetchOnPort(
     msg.url,
     msg.method,
     msg.headers,
-    msg.bodyBase64
-      ? Uint8Array.from(atob(msg.bodyBase64), (c) => c.charCodeAt(0))
-      : undefined,
+    msg.bodyBase64 ? base64ToBytes(msg.bodyBase64) : undefined,
   );
   port.postMessage({
     kind: 'meta',
@@ -221,7 +209,7 @@ async function streamCorsFetchOnPort(
       if (!disconnected && buf.byteLength > 0) {
         port.postMessage({
           kind: 'chunk',
-          dataBase64: arrayBufferToBase64(new Uint8Array(buf)),
+          dataBase64: bytesToBase64(new Uint8Array(buf)),
         });
       }
     } else {
@@ -234,7 +222,7 @@ async function streamCorsFetchOnPort(
           if (value && value.byteLength > 0) {
             port.postMessage({
               kind: 'chunk',
-              dataBase64: arrayBufferToBase64(value),
+              dataBase64: bytesToBase64(value),
             });
           }
         }

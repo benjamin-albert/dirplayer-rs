@@ -12,6 +12,9 @@ use web_sys::Response;
 use percent_encoding::percent_decode_str;
 
 use crate::player::net_manager::NetManagerSharedState;
+use crate::player::net_progress::{
+    should_hold_nested_dcr, synthetic_mid_file_progress,
+};
 
 pub type NetResult = Result<Vec<u8>, i32>;
 
@@ -249,10 +252,6 @@ async fn maybe_hold_dcr_for_preloader(
     task_id: u32,
     bytes_len: u64,
 ) {
-    let path = url.split('?').next().unwrap_or(url).to_ascii_lowercase();
-    if !path.ends_with(".dcr") {
-        return;
-    }
     let (goto_wait_active, is_playing, flash_sprites) =
         crate::player::reserve_player_ref(|p| {
             (
@@ -271,10 +270,12 @@ async fn maybe_hold_dcr_for_preloader(
         })
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
-    if goto_wait_active || !is_playing {
-        return;
-    }
-    if flash_active <= 0.0 && flash_sprites == 0 {
+    if !should_hold_nested_dcr(
+        url,
+        goto_wait_active,
+        is_playing,
+        flash_active > 0.0 || flash_sprites > 0,
+    ) {
         return;
     }
 
@@ -298,9 +299,9 @@ async fn maybe_hold_dcr_for_preloader(
                 .get(&task_id)
                 .map(|s| (s.bytes_loaded, s.bytes_total))
                 .unwrap_or((0, 0));
-            let total = reported_total.max(bytes_len).max(2);
-            if loaded == 0 || loaded >= total {
-                let mid = (total / 2).max(1).min(total - 1);
+            if let Some((mid, total)) =
+                synthetic_mid_file_progress(loaded, reported_total, bytes_len)
+            {
                 state.update_task_progress(task_id, mid, total);
             }
         }

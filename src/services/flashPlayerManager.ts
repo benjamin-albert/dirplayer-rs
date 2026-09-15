@@ -21,6 +21,13 @@ import {
   bridgeOnEvent,
   bridgeRegisterCallbackForwarders,
 } from './ruffleBridgeClient';
+import { base64ToBytes, bytesToBase64 } from './base64Binary';
+import {
+  corsProxyContentLength,
+  corsResponseHeaders,
+  shouldRelayCrossOriginFetch,
+  upgradeInsecureUrlForPage,
+} from './corsProxyPolicy';
 
 interface FlashInstance {
   spriteNum: number;     // Director sprite number this instance belongs to
@@ -133,16 +140,7 @@ function maybeCorsProxy(urlStr: string): string | null {
 // of scheme. Returns true if the URL was changed. No-op when the page itself is
 // http (no mixed-content restriction) or the request is already https.
 function upgradeInsecureUrl(url: URL): boolean {
-  if (
-    window.location.protocol === 'https:' &&
-    url.protocol === 'http:' &&
-    url.hostname !== 'localhost' &&
-    url.hostname !== '127.0.0.1'
-  ) {
-    url.protocol = 'https:';
-    return true;
-  }
-  return false;
+  return upgradeInsecureUrlForPage(url, window.location.protocol);
 }
 
 // Cross-origin fetch proxy (MV3 extension). A content-script `fetch()` is
@@ -176,30 +174,7 @@ function isExtensionContext(): boolean {
 }
 
 function shouldProxyCrossOrigin(url: URL): boolean {
-  if (!isExtensionContext()) return false;
-  try {
-    if (url.origin === window.location.origin) return false; // same-origin: no CORS
-  } catch {
-    return false;
-  }
-  if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return false; // dev proxy handles its own CORS
-  return url.protocol === 'http:' || url.protocol === 'https:';
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let bin = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[]);
-  }
-  return btoa(bin);
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+  return shouldRelayCrossOriginFetch(url, window.location.origin, isExtensionContext());
 }
 
 function bodyInitToBytes(body: BodyInit): Uint8Array | undefined {
@@ -255,13 +230,6 @@ interface CorsFetchError {
 
 type CorsFetchPortMsg = CorsFetchMeta | CorsFetchChunk | CorsFetchDone | CorsFetchError;
 
-function corsResponseHeaders(contentType?: string, contentLength?: string): HeadersInit | undefined {
-  const headers: Record<string, string> = {};
-  if (contentType) headers['content-type'] = contentType;
-  if (contentLength) headers['content-length'] = contentLength;
-  return Object.keys(headers).length ? headers : undefined;
-}
-
 async function corsFetchRawViaBackground(
   url: string,
   method: string,
@@ -288,7 +256,7 @@ async function corsFetchBufferedViaMessage(
   if (resp.error) throw new Error('cors-fetch: ' + resp.error);
   const bytes = base64ToBytes(resp.bodyBase64 || '');
   const status = resp.status && resp.status >= 200 ? resp.status : 200;
-  const contentLength = resp.contentLength || String(bytes.byteLength);
+  const contentLength = corsProxyContentLength(resp.contentLength, bytes.byteLength);
   return new Response(bytes as unknown as BodyInit, {
     status,
     statusText: resp.statusText || '',
