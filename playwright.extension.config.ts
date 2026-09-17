@@ -21,5 +21,7 @@ export default defineConfig({
     port: PORT,
     cwd: __dirname,
     reuseExistingServer: false,
+    stdout: "pipe",
+    stderr: "pipe",
   },
 });

@@ -7,6 +7,7 @@
  * host: a page-privileged fetch is CORS-blocked, so success means the SW relay ran.
  */
 import http from "node:http";
+import { logE2e } from "./prepare-extension-e2e.mjs";
 import {
   PORT,
   PLAYER_HOST,
@@ -154,8 +155,8 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`Extension e2e fixture listening on http://127.0.0.1:${PORT}`);
+  logE2e(`Fixture HTTP server listening on http://127.0.0.1:${PORT}`);
   if (!SHAPES_PAYLOAD) {
-    console.warn("shapes corpus movie not found — movie-load specs will skip");
+    logE2e("shapes corpus movie not found — movie-load specs will skip");
   }
 });

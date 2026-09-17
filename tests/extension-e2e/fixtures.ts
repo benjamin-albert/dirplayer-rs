@@ -1,6 +1,7 @@
 import { chromium, test as base, expect, type BrowserContext, type Page } from "@playwright/test";
 import {
   EXTENSION_E2E_DIR,
+  logE2e,
 } from "../../scripts/prepare-extension-e2e.mjs";
 import {
   HOST_RESOLVER_RULES,
@@ -41,6 +42,8 @@ export const test = base.extend<
   }
 >({
   extensionContext: [async ({}, use) => {
+    logE2e(`Launching Chromium with --load-extension=${EXTENSION_E2E_DIR}`);
+    const launchStarted = Date.now();
     const context = await chromium.launchPersistentContext("", {
       channel: "chromium",
       headless: !!process.env.CI,
@@ -51,6 +54,7 @@ export const test = base.extend<
         `--host-resolver-rules=${HOST_RESOLVER_RULES}`,
       ],
     });
+    logE2e(`Chromium launched (${Date.now() - launchStarted}ms)`);
     await use(context);
     await context.close();
   }, { scope: "worker" }],
